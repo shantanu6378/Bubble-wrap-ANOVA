@@ -1,0 +1,652 @@
+---
+title: "STAT425_FinalProject"
+author: "Debapratim Ghosh, Shantanu Solanki"
+date: "12/9/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## Problem Statement 
+
+Company XX is a manufacturer of several types of protective packaging, including bubble wrap sold in both retail and bulk. The objective of this project is to determine the best operating conditions for the bubble wrap lines to increase production capacity.<br>
+
+Variables such as extrusion rate, temperature, line speed, and percent loading of additives were key factors that were considered in the study. After preliminary experiments, the engineers decided that line speed, and percent loading of additives were the most significant factors and thus a complete randomized (also called factorial) design was implemented with these two factors: <br> 
+
+$$ \text{1. Line Speed with levels 36,37 and 38 m/mm}$$
+$$ \text{2. Loading of Additives with levels 0,2,4 %} $$
+
+The response variable was the `production rate` measured in lbs/hr. The experiment was
+replicated 3 times and the randomization order for each replication was also recorded.
+Our goal is to find the optimal combination of line speed and percent load of additives that results in the highest production rate.<br>
+
+The data can be found in the bubblewrap.csv data set on Moodle.
+
+
+## Analysis Steps 
+
+### Loading Required Libraries 
+
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(faraway)
+library(lmtest)
+library(MASS)
+
+library(car)
+library(ggplot2)
+
+#library(Metrics)
+
+library(leaps)
+```
+
+
+### Loading the experimental data 
+
+```{r}
+df<-read.csv('bubblewrap.csv',header=T)
+head(df)
+```
+
+Here , `loading` and `line_speed` are the factors of the experiment and `rate` is the response. 
+
+
+Before proceeding further let's convert the `line_speed` and `loading` to factors. 
+
+```{r}
+df$line_speed<-as.factor(df$line_speed)
+df$loading<-as.factor(df$loading)
+```
+
+
+### Exploring the data 
+
+Let's explore the dataset available to us 
+
+```{r}
+dim(df)
+```
+
+So our sample size is 27. Let's check the number of samples present for each replication 
+
+```{r}
+df%>%group_by(replication)%>%count()
+```
+
+So for each replication we have 9 experimental results.So we have a balanced design. 
+
+Let's get summary statistics of the data: 
+
+```{r}
+summary(df)
+```
+
+### Check for difference in response for different levels of factors and presence of interactions
+
+Now, let's check how the response differs for various factor levels and let's confirm whether interactions are present or not between the two factors.
+
+
+```{r}
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+```{r}
+p1 = ggplot(aes(x=loading, y=rate), data=df) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle=-45)) + 
+  ylab("Production Rate (lbs/hr)")
+
+p2 = ggplot(aes(x=line_speed, y=rate), data=df) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle=-45)) + 
+  ylab("Production Rate (lbs/hr)")
+
+p3 = ggplot(df, aes(x=loading, y=rate)) + 
+  geom_point() + 
+  stat_summary(fun="mean", geom="line", aes(group=line_speed, linetype=line_speed))+
+  theme(legend.position = "top", legend.direction = "horizontal")
+
+p4 = ggplot(df, aes(x=line_speed, y=rate)) + 
+  geom_point() + 
+  stat_summary(fun="mean", geom="line", aes(group=loading, linetype=loading))+
+  theme(legend.position = "top", legend.direction = "horizontal")
+
+multiplot(p1, p2, p3, p4, cols=2)
+
+
+```
+
+
+The following observations can be made : <br>
+
+1. From the box plot of `loading` vs `Rate` we can see that the highest production rate is present for a loading of 4%. <br>
+2.From the box plot of `line_speed` vs `Rate` we can see that the highest production rate is present for a line_speed of 37 m/mm.<br>
+3. From both the interaction plots, we observe that the lines intersect when extrapolated, which **confirms the presence of interactions between factors. ** <br>
+
+**`Rate` being high doesn't imply that its due to one of the factors. It could be due to random chance. Similarly the presence of interactions doesn't imply its statistically signficant. We need to test both of the above through 2-way anova models. **
+
+
+### Two Way Anova Model 
+
+
+Since we are building an ANOVA model, the factor effects model for this problem can be described below : <br>
+
+$$ Y_{ijk} = \mu + \alpha_i +\beta_j + (\alpha\beta)_{ij}+\epsilon_{ijk}$$
+
+
+Where 
+
+* $Y_{ijk}$ = Production Rate in lbs/hr
+* $\mu$ = mean production rate  of bubble wrap across all experimental settings (grand mean)
+* $\alpha_i$= Effect of line speed (m/mm) i on production rate  of bubble wrap where i =1,2,3
+* $\beta_j$= Effect of loading percentage j  production rate  of bubble wrap where j=1,2,3
+* $(\alpha\beta)_{ij}$ = Interaction term between Line Speed i and loading percentage i <br>
+
+The error terms satisfy the assumption $\epsilon_{ijk}$ ~ $\mathcal{N}(0,\sigma^2)$. 
+
+Sum Constraints : 
+
+* $\sum_{i=1}^{3}\alpha_i$=0 
+* $\sum_{j=1}^{3}\beta_j$=0 
+* $\sum_{i}(\alpha\beta)_{ij}=\sum_{j} (\alpha\beta)_{ji}=0$
+
+
+**Testing for interaction terms** <br>
+
+Let's fit a model with the interaction between the two factors and perform an ANOVA test on the model to check the significance of interaction .
+```{r}
+mod.int<-lm(rate~line_speed*loading,data=df)
+summary(mod.int)
+anova(mod.int)
+```
+Through the ANOVA output we are testing the below hypothesis : 
+
+\[\begin{cases}
+&H_0: (\alpha\beta)_{ij}=0,\forall i,j\\
+&H_{\alpha}: \text{ not all } (\alpha\beta)_{ij}=0
+
+\end{cases}\] 
+
+**Since the p-value of the interaction term is more than our significance level of 5%, we will fail to reject the null and conclude that the interaction term is not significant.** <br>
+
+
+**Testing for main effects** <br>
+
+Now let's look at the additive model for production rate with the main effects `line_speed` and `loading`.
+
+```{r}
+additive.mod<-lm(rate~line_speed +loading,data=df)
+summary(additive.mod)
+```
+
+The p-value of the summary of the regression model above is less than 5% which indicates that there is at least one level of factor where the mean production rate is different from the rest. Let's test each factor against the additive model and check their significance.
+
+**Line Speed ** <br>
+
+```{r}
+mod.loading<-lm(rate~loading, data=df)
+anova(mod.loading,additive.mod)
+```
+
+The above ANOVA output tests the following hypothesis : 
+
+\[\begin{cases}
+&H_0: Y_{ijk} = \mu +\beta_j +\epsilon_{ijk}\\
+&H_{\alpha}: Y_{ijk} = \mu + \alpha_i +\beta_j +\epsilon_{ijk}
+
+\end{cases}\] 
+
+Where <br> 
+
+* $\alpha_i$= Effect of line speed (m/mm) i on production rate  of bubble wrap where i =1,2,3
+* $\beta_j$= Effect of loading percentage j  production rate  of bubble wrap where j=1,2,3
+
+Now since the p-value is less than our significance level of 5%, we can reject the null hypothesis $H_0$ and conclude that the reduced model with only loading is not adequate and the `line_speed` is a statistically significant factor. <br>
+
+**Loading** <br>
+
+```{r}
+mod.lin.speed<-lm(rate~line_speed, data=df)
+anova(mod.lin.speed,additive.mod)
+```
+
+The above ANOVA output tests the following hypothesis : 
+
+\[\begin{cases}
+&H_0: Y_{ijk} = \mu + \alpha_i +\epsilon_{ijk}\\
+&H_{\alpha}: Y_{ijk} = \mu + \alpha_i +\beta_j +\epsilon_{ijk}
+
+\end{cases}\] 
+
+Where <br> 
+
+* $\alpha_i$= Effect of line speed (m/mm) i on production rate  of bubble wrap where i =1,2,3
+* $\beta_j$= Effect of loading percentage j  production rate  of bubble wrap where j=1,2,3
+
+Since, the p-value is less than 5% , we can reject the $H_0$ and conclude that the full additive model is adequate and `loading` is a statistically significant factor.
+
+
+**Therefore, both `loading` and `line_speed` are statistically significant factors and we should consider the additive model as the best model for predicting the response. ** 
+
+Let's perform an ANOVA test on our additive model
+
+```{r}
+anova(additive.mod)
+```
+So, as expected, we find that both the factors are statistically significant. 
+
+
+### Checking Model Diagnostics 
+First, let's check for outliers using Cook's distance:
+
+```{r}
+cook = cooks.distance(additive.mod)
+halfnorm(cook, 4, labs=as.character(1:length(cook)), ylab="Cook's distances")
+```
+
+
+Since, none of the Cook's distances is more than 1, we can conclude that we don't have any outliers/unusual observations.
+
+```{r}
+par(mfrow=c(1,2))
+qqnorm(additive.mod$res)
+plot(additive.mod$fitted, additive.mod$res, xlab="Fitted", ylab="Residuals")
+```
+
+Observing the Q-Q plot for residuals we can see that it doesn't follow a straight line and from the residuals vs fitted plot , we can see that its of a trumpet shape. However, to ascertain if both conditions are met, we need to perform the appropriate hypothesis tests. 
+
+We can confirm this by performing the relevant hypothesis tests.<br>
+
+**Breusch-Pagan Test for checking constant variance**
+
+```{r}
+bptest(additive.mod)
+
+```
+We are checking the following hypothesis : 
+
+\[\begin{cases}
+&H_0: \text{Error Variance is constant}\\
+&H_{\alpha}: \text{Error Variance is NOT constant}
+
+\end{cases}\] 
+
+**Since p-value is greater than our significance level of 5% , we fail to reject $H_0$ and conclude that the error variance is constant. ** <br>
+
+**Levene Test for checking constant variance**
+```{r}
+df$res = additive.mod$residuals
+levene = lm(abs(res)~line_speed + loading, data = df)
+summary(levene)
+anova(levene)
+
+```
+Since the anova summary shows p-value of greater than 1%, we can't reject the null hypothesis that the errors have constant variance.
+
+
+**Shapiro-Wilks Test for checking normality of errors**
+```{r}
+shapiro.test(additive.mod$residuals)
+```
+We are checking the following hypothesis through the above output: 
+
+\[\begin{cases}
+&H_0: \text{Errors are normally distributed}\\
+&H_{\alpha}: \text{Error are NOT normally distributed}
+
+\end{cases}\] 
+
+**Since p-value is less than our significance level of 5%, we can reject the $H_0$ and conclude that the normality assumption is violated. **
+
+In order to make sure that the error variances are normal in nature, we can perform transformation of our response using box cox transformation.
+
+
+
+### Box-Cox transformation
+```{r}
+
+model.transformation<-boxcox(additive.mod,data=df,lambda=seq(-2,10,by=0.025))
+
+model.transformation$x[model.transformation$y==max(model.transformation$y)]
+
+tmp=model.transformation$x[model.transformation$y>max(model.transformation$y)-qchisq(0.95,1)/2]
+
+range(tmp)
+```
+
+So the box-cox transformation is suggesting that we should transform our response to 
+$Rate^5$. 
+
+```{r}
+box.additive<-lm(rate^5~line_speed+loading,data=df)
+summary(box.additive)
+anova(box.additive)
+
+```
+**Plot residuals showing normality and constant variance:
+```{r}
+
+par(mfrow=c(1,2))
+#qqnorm(box.additive$res)
+#plot(box.additive$fitted, box.additive$res, xlab="Fitted", ylab="Residuals")
+plot(box.additive, which = 2)
+plot(box.additive, which = 1)
+```
+
+**Checking Normality**
+
+```{r}
+shapiro.test(box.additive$residuals)
+```
+**Checking Constant Variance through Levene's test**
+
+
+```{r}
+#bptest(box.additive)
+df$res.box = box.additive$residuals
+lm = lm(abs(res.box) ~ line_speed + loading, data = df)
+summary(lm)
+
+```
+Since the summary of the regression model of residuals from the Box-Cox transformation on the `line_speed` variable shows none of the variables significant, we can conclude constancy in variance.
+
+### Pairwise Comparisons 
+
+Let's use the Tukey test to compare the factor levels pairwise and check their significance
+
+**Pairwise Comparison for `Line Speed` Levels**
+
+```{r}
+TukeyHSD(aov(rate^5 ~ line_speed + loading, data=df), "line_speed")
+
+```
+```{r}
+myCIs = TukeyHSD(aov(rate^5 ~ line_speed + loading, data=df), "line_speed")
+
+plot(myCIs)
+
+```
+
+```{r}
+pnorm(25, 45*0.8, 2.683)-pbinom(25, 45, 0.8)
+pnorm(25, 40*0.5, 3.16)-pbinom(25, 40, 0.5)
+pnorm(10, 20*0.2, 2.23)-pbinom(10, 20, 0.5)
+```
+From the Tukey Output above, we can observe that the `line speed`=37 m/mm has the highest mean production rate and while `line speed` 38 m/mm and `line speed` 36 m/mm have similar production rate. Also, `line speed`=37 m/mm has its production rate significantly higher than the other two factor levels. So `line speed`=37 m/mm is the optimum line speed for ensuring the highest production rate.
+
+
+**Pairwise Comparison for `Loading` Levels**
+
+```{r}
+
+TukeyHSD(aov(rate^5 ~ line_speed + loading, data=df), "loading")
+myCIs = TukeyHSD(aov(rate^5 ~ line_speed + loading, data=df), "loading")
+
+plot(myCIs)
+```
+
+From the Tukey Output above, we can observe that the `Loading of Additives`=4% has the highest mean production rate and its significantly higher from the mean production rate of the other 2 factor levels. So `Loading of Additives`=4%  is the optimum loading percentage for ensuring the highest production rate.
+
+
+## Conclusion Part I
+
+In a nutshell, if we operate the production line with 4% loading of additives and a line speed of 37m/mm , we are most likely to get the highest production rate as compared to other combinations of operating conditions.
+
+
+# Part II- Unbalanced Anova :
+
+First, we create a dataframe after excluding the invalid observations:
+```{r}
+mask = !((df$replication == 2) & (df$run_order == 2 | df$run_order == 3 |df$run_order == 5))
+df_part2 = df[mask, ]
+
+```
+
+
+```{r}
+p1 = ggplot(aes(x=loading, y=rate), data=df_part2) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle=-45)) + 
+  ylab("Production Rate (lbs/hr)")
+
+p2 = ggplot(aes(x=line_speed, y=rate), data=df_part2) + 
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle=-45)) + 
+  ylab("Production Rate (lbs/hr)")
+
+p3 = ggplot(df_part2, aes(x=loading, y=rate)) + 
+  geom_point() + 
+  stat_summary(fun="mean", geom="line", aes(group=line_speed, linetype=line_speed))+
+  theme(legend.position = "top", legend.direction = "horizontal")
+
+p4 = ggplot(df_part2, aes(x=line_speed, y=rate)) + 
+  geom_point() + 
+  stat_summary(fun="mean", geom="line", aes(group=loading, linetype=loading))+
+  theme(legend.position = "top", legend.direction = "horizontal")
+
+multiplot(p1, p2, p3, p4, cols=2)
+
+
+```
+
+
+Let's fit a two-way anova model:
+
+```{r}
+model2 = lm(rate^5~ line_speed*loading, data = df_part2)
+summary(model2)
+```
+Since, the model is an unbalanced anova, we need to use Type III Anova test to determine the significance. However, we should ascertain whether the residuals are normally distributed.
+
+```{r}
+par(mfrow = c(1, 2))
+#Normal QQ plot of the residuals:
+plot(model2, which = 2)
+
+```
+
+
+The QQ plot looks almost linear. We expect the errors to be approximately distributed. Let's check this using the Shapiro_Wilk Test as under:
+
+```{r}
+shapiro.test(model2$residuals)
+```
+Since the p-value is larger than 0.05, we can't reject the null hypothesis which assumes the errors are normally distributed. Thus, we can go on to check for the significance of the predictors through the Type III Anova as follows:
+```{r}
+library(car)
+Anova(model2,type = 'III')
+```
+The above Type III anova summary tests the significance of each variable **given** other variables are already present. Thus, the p-value for the interaction term above correspond to the following test:
+$$H_0: y_{ijk} = \mu + \alpha_i + \beta_j+(\alpha\beta)_{ij} + \epsilon_{ijk}$$
+vs
+$$H_1: y_{ijk} = \mu + \alpha_i + \beta_j+ \epsilon_{ijk}$$
+Since the p-value for the interaction term is greater than 0.05,the interaction term is not statistically significant. We need to remove the term refit the model as under:
+```{r}
+model2.additive = lm(rate^5 ~ line_speed+loading, data = df_part2)
+summary(model2.additive)
+```
+
+Let's test each variable individually to check whether they are statistically significant or not. 
+
+**Loading Percentage**
+
+```{r}
+model2.line_speed<-lm(rate^5 ~ line_speed, data = df_part2)
+anova(model2.line_speed,model2.additive)
+```
+The above anova output tests the below hypotheses : 
+
+
+\[\begin{cases}
+&H_0: Y_{ijk} = \mu + \alpha_i +\epsilon_{ijk}\\
+&H_{\alpha}: Y_{ijk} = \mu + \alpha_i +\beta_j +\epsilon_{ijk}
+
+\end{cases}\] 
+
+Where <br> 
+
+* $\alpha_i$= Effect of line speed (m/mm) i on production rate  of bubble wrap where i =1,2,3
+* $\beta_j$= Effect of loading percentage j  production rate  of bubble wrap where j=1,2,3
+
+Since p-value is less than 5%, we can reject the null hypothesis and conclude that the full additive model is adequate.
+
+**Linespeed**
+
+```{r}
+model2.loading<-lm(rate^5 ~ loading, data = df_part2)
+anova(model2.loading,model2.additive)
+```
+
+```{r}
+Anova(model2.additive, type = 'III')
+```
+From the Type III Anova, we can see that `loading` and  `line_speed` both are significant at 5% significance level. 
+
+
+ Thus, our final model is:
+$$Y_{jk} = \mu + \alpha_i+\beta_j + \epsilon_{jk}$$
+where, <br>
+* $Y_{jk}$ = Production Rate in lbs/hr <br>
+* $\mu$ = mean production rate  of bubble wrap across all experimental settings (grand mean)<br>
+* $\beta_j$= Effect of loading percentage j  production rate  of bubble wrap where j=1,2,3<br>
+The error terms satisfy the assumption $\epsilon_{jk}$ ~ $\mathcal{N}(0,\sigma^2)$. 
+
+With constraint:<br>
+$\beta_0=0$
+
+### Model Diagnostics:
+**Outliers:**
+```{r}
+cook = cooks.distance(model2.additive)
+halfnorm(cook, 4, labs=as.character(1:length(cook)), ylab="Cook's distances")
+```
+
+
+
+Since all the Cook's distances are less that 1, we can conclude there are no outliers.
+
+
+**Normality**
+```{r}
+par(mfrow= c(1, 2))
+plot(model2.additive, which = 1)
+plot(model2.additive, which = 2)
+```
+
+
+
+
+```{r}
+shapiro.test(model2.additive$residuals)
+```
+
+Since the p-value is less than 5% , we have to reject the null and conclude that the residuals are not normal. We need to do a permutation test to check for statistical significance of the factors individually. Our null hypothesis is that the factors line_speed and loading are not significant.
+
+**Permutation Test for Linespeed**
+
+```{r}
+set.seed(100)
+n.iter = 2000
+fstats = numeric(n.iter)
+for (i in 1:n.iter){
+  df.temp = df_part2
+  df.temp[, 'line_speed'] = c(df.temp[sample(9), 'line_speed'], df.temp[sample(c(10:15)), 'line_speed'], df.temp[sample(c(16:24)), 'line_speed']) # Shuffling the values in line_speed but only within the same trial and not across trials, otherwise we may have no value for a particular line_speed in a single trial
+  reg = lm(rate^5 ~line_speed + loading, data = df.temp)
+  fstats[i] = summary(reg)$fstat[1]
+}
+p.value = length(fstats[fstats>summary(model2.additive)$fstat[1]])/n.iter
+p.value
+
+```
+
+**Permutation Test for Loading**
+
+```{r}
+set.seed(100)
+n.iter = 2000
+fstats = numeric(n.iter)
+for (i in 1:n.iter){
+  df.temp = df_part2
+  df.temp[, 'loading'] = c(df.temp[sample(9), 'loading'], df.temp[sample(c(10:15)), 'loading'], df.temp[sample(c(16:24)), 'loading'])
+  reg = lm(rate^5 ~loading + line_speed, data = df.temp)
+  fstats[i] = summary(reg)$fstat[1]
+}
+p.value = length(fstats[fstats>summary(model2.additive)$fstat[1]])/n.iter
+p.value
+```
+
+**Since the p-value for `loading` is less than 5%, but for `line_speed` is greater than 0.05, we can conclude that only `loading` is statistically significant. Even if we fit the model with both the variables, we expect the CI for line_speed to be containing 0. Let's check that.**
+
+**Levene's Test for constancy of error variance:**
+
+```{r}
+df_part2$res.model2 = summary(model2.additive)$residuals
+
+summary(lm(abs(res.model2)~loading+line_speed, data = df_part2))
+
+```
+Since the p-value = 0.1605 is well greater than 1%, we can't reject the null hypothesis that the errors have constant variance.
+
+Thus, our model is robust with respect to the model assumptions. Let's find out the C.I. for the factors:
+
+**Loading**
+
+```{r}
+TukeyHSD(aov(rate^5 ~ loading+line_speed, data=df_part2), "loading")
+myCIs = TukeyHSD(aov(rate^5 ~ loading +line_speed, data=df_part2), "loading")
+
+plot(myCIs)
+```
+
+From the Confidence Intervals, we can observed that 4% loading has significantly better production rate than 2% and 0%. So `Loading of Additives`=4%  is the optimum loading percentage for ensuring the highest production rate.
+
+**Line Speed **
+
+```{r}
+TukeyHSD(aov(rate^5 ~ loading+line_speed, data=df_part2), "line_speed")
+myCIs = TukeyHSD(aov(rate^5 ~ loading+line_speed, data=df_part2), "line_speed")
+
+plot(myCIs)
+```
+
+We can see from the plots above that since all 3 line speeds have 0 in their confidence intervals, with `line_speed` = 37, though showing a better point estimate than `line_speed` = 36 and `line_speed` = 38, has 0 just falling inside the CI. This was expected since the p-value for `line_speed` was just greater than 0.05. Thus, to conclude, none of the line speeds are significantly different from each other as far as their impact on the production rate is concerned. So, for the unbalanced ANOVA problem, we won't be utilizing `line_speed` for maximizing production rate.
+
+## Conclusion Part II 
+
+
+In case of unbalanced ANOVA, we removed a few datapoints before performing our analysis.The optimal conditions for maximizing production rate comes out to be a  loading percentage of 4% . The different line speeds to operate the production line turns out to be statistically similar to each other and therefore any line speed can be chosen under 4% loading percentage.
